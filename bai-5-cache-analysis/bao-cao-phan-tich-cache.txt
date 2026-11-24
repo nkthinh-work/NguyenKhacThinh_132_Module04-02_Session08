@@ -1,0 +1,17 @@
+BÁO CÁO PHÂN TÍCH KỸ THUẬT
+Chủ đề: Nguyên nhân mất Gradle Cache khi chuyển sang Multi-stage Dockerfile trên Self-hosted Runner
+
+Kính gửi: Giám đốc Kỹ thuật (CTO) – QuickBite
+
+1. Tóm tắt sự cố
+Khi chuyển quy trình CI/CD của order-service sang Multi-stage Dockerfile trên Self-hosted Runner (cấu hình DooD), thời gian thực thi tăng từ dưới 1.5 phút lên 4–5 phút do Gradle phải tải lại toàn bộ thư viện phụ thuộc từ Internet ở mỗi lần chạy, mặc dù thư mục ~/.gradle đã tồn tại trên máy chủ host.
+
+2. Phân tích nguyên nhân gốc rễ (Root Cause)
+Sự cố xuất phát từ ranh giới cô lập không gian lưu trữ (filesystem isolation) giữa tiến trình chạy trực tiếp trên máy chủ host và tiến trình biên dịch bên trong Container Builder của Docker:
+
+- Ở pipeline cũ (2 jobs chạy trực tiếp trên Runner): Tiến trình Gradle thực thi ngay trong hệ điều hành của máy chủ Runner, do đó nó đọc và ghi trực tiếp vào thư mục ~/.gradle trên ổ đĩa vật lý của host. Các thư viện được lưu bền vững giữa các lần chạy.
+- Ở pipeline mới (Multi-stage Dockerfile): Mặc dù Runner chia sẻ Docker socket (/var/run/docker.sock) với host, lệnh docker build vẫn yêu cầu Docker Daemon tạo ra một Container Builder tạm thời và cô lập hoàn toàn để thực thi Stage 1. Container này sở hữu hệ thống tệp (container filesystem) riêng biệt, hoàn toàn không tự động mount thư mục ~/.gradle từ máy chủ host vào bên trong.
+- Hơn nữa, mỗi khi mã nguồn hoặc file cấu hình thay đổi làm mất hiệu lực lớp cache (layer cache) của lệnh COPY trong Dockerfile, Docker buộc phải khởi tạo lại môi trường Stage 1 từ lớp nền sạch (chưa có thư mục /root/.gradle), khiến Gradle phải tải lại toàn bộ dependencies từ đầu.
+
+3. Kết luận
+Việc chia sẻ Docker socket chỉ giúp Runner điều khiển được Docker Daemon của host chứ không tự động chia sẻ dữ liệu ổ đĩa vào bên trong các build container tạm thời. Để khắc phục trong tương lai, cần sử dụng cơ chế BuildKit Cache Mount (--mount=type=cache,target=/root/.gradle) trong Dockerfile.
